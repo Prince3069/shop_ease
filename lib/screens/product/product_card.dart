@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shop_ease/models/product_model.dart';
 import 'package:shop_ease/services/auth_service.dart';
-// import '../models/product_model.dart';
-import '../services/auth_service.dart';
+
 import '../services/cart_service.dart';
 
 class ProductCard extends StatelessWidget {
