@@ -1,234 +1,173 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/material.dart';
-import '../models/user_model.dart';
 
-class AuthService with ChangeNotifier {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+class AuthService {
+  final FirebaseAuth _auth;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  UserModel? _userModel;
-  bool _isLoading = false;
-  String? _error;
 
-  // Getters
-  UserModel? get currentUser => _userModel;
-  Stream<UserModel?> get user =>
-      _auth.authStateChanges().asyncMap(_userFromFirebase);
-  bool get isLoading => _isLoading;
-  String? get error => _error;
+  AuthService(this._auth);
 
-  // Helper method to convert Firebase User to UserModel
-  Future<UserModel?> _userFromFirebase(User? user) async {
-    if (user == null) {
-      _userModel = null;
-      return null;
-    }
+  // Auth state changes stream
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
 
-    // Get user document from Firestore
-    final doc = await _firestore.collection('users').doc(user.uid).get();
-
-    if (doc.exists) {
-      _userModel = UserModel.fromMap(doc.data()!, doc.id);
-      return _userModel;
-    } else {
-      // Create user document if it doesn't exist
-      final newUser = UserModel(
-        id: user.uid,
-        email: user.email ?? '',
-        name: user.displayName ?? '',
-        photoUrl: user.photoURL,
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-      );
-
-      await _firestore.collection('users').doc(user.uid).set(newUser.toMap());
-      _userModel = newUser;
-      return newUser;
-    }
-  }
-
-  // Sign in with email and password
-  Future<UserModel?> signInWithEmailAndPassword(
-      String email, String password) async {
-    _setLoading(true);
+  // Sign In with email and password
+  Future<UserCredential> signIn(String email, String password) async {
     try {
-      final userCredential = await _auth.signInWithEmailAndPassword(
+      final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
-      _setError(null);
-      _userModel = await _userFromFirebase(userCredential.user);
-      return _userModel;
+      return credential;
     } on FirebaseAuthException catch (e) {
-      _handleAuthError(e);
-      return null;
-    } finally {
-      _setLoading(false);
+      throw _handleAuthException(e);
     }
   }
 
-  // Register with email and password
-  Future<UserModel?> registerWithEmailAndPassword(
-      String email, String password, String name) async {
-    _setLoading(true);
+  // Sign Up with email and password
+  Future<UserCredential> signUp({
+    required String email,
+    required String password,
+    required String name,
+  }) async {
     try {
-      final userCredential = await _auth.createUserWithEmailAndPassword(
+      // Create user with email and password
+      final credential = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
 
-      // Update display name
-      await userCredential.user?.updateDisplayName(name);
+      // Add user details to Firestore
+      await _createUserDocument(credential.user!.uid, name, email);
 
-      // Create user in Firestore
-      final newUser = UserModel(
-        id: userCredential.user!.uid,
-        email: email,
-        name: name,
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-      );
-
-      await _firestore
-          .collection('users')
-          .doc(userCredential.user!.uid)
-          .set(newUser.toMap());
-
-      _setError(null);
-      _userModel = newUser;
-      return newUser;
+      return credential;
     } on FirebaseAuthException catch (e) {
-      _handleAuthError(e);
-      return null;
-    } finally {
-      _setLoading(false);
+      throw _handleAuthException(e);
     }
   }
 
-  // Sign out
+  // Create user document in Firestore
+  Future<void> _createUserDocument(
+      String uid, String name, String email) async {
+    await _firestore.collection('users').doc(uid).set({
+      'name': name,
+      'email': email,
+      'createdAt': Timestamp.now(),
+      'profilePicture': '',
+      'phoneNumber': '',
+      'addresses': [],
+      'wishlist': [],
+    });
+  }
+
+  // Sign Out
   Future<void> signOut() async {
     await _auth.signOut();
-    _userModel = null;
-    notifyListeners();
+  }
+
+  // Password Reset
+  Future<void> resetPassword(String email) async {
+    try {
+      await _auth.sendPasswordResetEmail(email: email);
+    } on FirebaseAuthException catch (e) {
+      throw _handleAuthException(e);
+    }
+  }
+
+  // Get current user
+  User? get currentUser => _auth.currentUser;
+
+  // Get user data from Firestore
+  Future<Map<String, dynamic>?> getUserData() async {
+    if (currentUser == null) return null;
+
+    final doc =
+        await _firestore.collection('users').doc(currentUser!.uid).get();
+    return doc.data();
   }
 
   // Update user profile
   Future<void> updateProfile({
     String? name,
-    String? photoUrl,
     String? phoneNumber,
-    String? address,
+    String? profilePicture,
   }) async {
-    if (_userModel == null) return;
+    if (currentUser == null) throw Exception('User not authenticated');
 
-    _setLoading(true);
-    try {
-      final updatedUser = _userModel!.copyWith(
-        name: name,
-        photoUrl: photoUrl,
-        phoneNumber: phoneNumber,
-        address: address,
-      );
+    final userRef = _firestore.collection('users').doc(currentUser!.uid);
+    final updates = <String, dynamic>{};
 
-      await _firestore
-          .collection('users')
-          .doc(_userModel!.id)
-          .update(updatedUser.toMap());
+    if (name != null) updates['name'] = name;
+    if (phoneNumber != null) updates['phoneNumber'] = phoneNumber;
+    if (profilePicture != null) updates['profilePicture'] = profilePicture;
 
-      // Update display name in Firebase Auth
-      if (name != null) {
-        await _auth.currentUser?.updateDisplayName(name);
-      }
-
-      // Update photo URL in Firebase Auth
-      if (photoUrl != null) {
-        await _auth.currentUser?.updatePhotoURL(photoUrl);
-      }
-
-      _userModel = updatedUser;
-      _setError(null);
-    } catch (e) {
-      _setError('Failed to update profile: ${e.toString()}');
-    } finally {
-      _setLoading(false);
+    if (updates.isNotEmpty) {
+      await userRef.update(updates);
     }
   }
 
-  // Reset password
-  Future<void> resetPassword(String email) async {
-    _setLoading(true);
-    try {
-      await _auth.sendPasswordResetEmail(email: email);
-      _setError(null);
-    } on FirebaseAuthException catch (e) {
-      _handleAuthError(e);
-    } finally {
-      _setLoading(false);
-    }
+  // Add address
+  Future<void> addAddress(Map<String, dynamic> address) async {
+    if (currentUser == null) throw Exception('User not authenticated');
+
+    final userRef = _firestore.collection('users').doc(currentUser!.uid);
+    await userRef.update({
+      'addresses': FieldValue.arrayUnion([address]),
+    });
   }
 
-  // Add to wishlist
-  Future<void> toggleWishlistItem(String productId) async {
-    if (_userModel == null) return;
+  // Remove address
+  Future<void> removeAddress(Map<String, dynamic> address) async {
+    if (currentUser == null) throw Exception('User not authenticated');
 
-    _setLoading(true);
-    try {
-      List<String> updatedWishlist = [..._userModel!.wishlist];
-
-      if (updatedWishlist.contains(productId)) {
-        updatedWishlist.remove(productId);
-      } else {
-        updatedWishlist.add(productId);
-      }
-
-      final updatedUser = _userModel!.copyWith(wishlist: updatedWishlist);
-
-      await _firestore
-          .collection('users')
-          .doc(_userModel!.id)
-          .update({'wishlist': updatedWishlist});
-
-      _userModel = updatedUser;
-      _setError(null);
-    } catch (e) {
-      _setError('Failed to update wishlist: ${e.toString()}');
-    } finally {
-      _setLoading(false);
-    }
+    final userRef = _firestore.collection('users').doc(currentUser!.uid);
+    await userRef.update({
+      'addresses': FieldValue.arrayRemove([address]),
+    });
   }
 
-  // Helper methods for state management
-  void _setLoading(bool value) {
-    _isLoading = value;
-    notifyListeners();
+  // Add product to wishlist
+  Future<void> addToWishlist(String productId) async {
+    if (currentUser == null) throw Exception('User not authenticated');
+
+    final userRef = _firestore.collection('users').doc(currentUser!.uid);
+    await userRef.update({
+      'wishlist': FieldValue.arrayUnion([productId]),
+    });
   }
 
-  void _setError(String? value) {
-    _error = value;
-    notifyListeners();
+  // Remove product from wishlist
+  Future<void> removeFromWishlist(String productId) async {
+    if (currentUser == null) throw Exception('User not authenticated');
+
+    final userRef = _firestore.collection('users').doc(currentUser!.uid);
+    await userRef.update({
+      'wishlist': FieldValue.arrayRemove([productId]),
+    });
   }
 
-  void _handleAuthError(FirebaseAuthException e) {
-    String message;
+  // Handle Firebase Auth exceptions with more user-friendly messages
+  String _handleAuthException(FirebaseAuthException e) {
     switch (e.code) {
       case 'user-not-found':
-        message = 'No user found with this email.';
-        break;
+        return 'No user found with this email address.';
       case 'wrong-password':
-        message = 'Wrong password provided.';
-        break;
+        return 'Incorrect password. Please try again.';
       case 'email-already-in-use':
-        message = 'The email address is already in use.';
-        break;
+        return 'An account already exists with this email address.';
       case 'weak-password':
-        message = 'The password is too weak.';
-        break;
+        return 'The password provided is too weak.';
       case 'invalid-email':
-        message = 'The email address is invalid.';
-        break;
+        return 'The email address is invalid.';
+      case 'operation-not-allowed':
+        return 'This operation is not allowed.';
+      case 'user-disabled':
+        return 'This user account has been disabled.';
+      case 'too-many-requests':
+        return 'Too many unsuccessful login attempts. Please try again later.';
+      case 'invalid-action-code':
+        return 'The action code is invalid. This can happen if the code is malformed or has already been used.';
       default:
-        message = e.message ?? 'An unknown error occurred.';
+        return 'An unexpected error occurred. Please try again.';
     }
-    _setError(message);
   }
 }

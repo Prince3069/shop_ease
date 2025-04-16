@@ -1,19 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
+import 'package:shop_ease/screens/home_screen.dart';
+import 'package:shop_ease/screens/login_screen.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
+
 import 'services/auth_service.dart';
-import 'screens/auth/login_screen.dart';
-import 'screens/home/home_screen.dart';
-import 'models/user_model.dart';
-import 'config/theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  runApp(const MyApp());
+
+  // Initialize Firebase App Check
+  await FirebaseAppCheck.instance.activate(
+    // Use debug provider for development
+    androidProvider: AndroidProvider.debug,
+    // For production use AndroidProvider.playIntegrity instead
+    appleProvider: AppleProvider.deviceCheck,
+  );
+
+  // Optional: For development, you can disable app verification
+  // FirebaseAuth.instance.setSettings(appVerificationDisabledForTesting: true);
+
+  runApp(const MyApp()); // Removed const keyword
 }
 
 class MyApp extends StatelessWidget {
@@ -23,39 +38,43 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AuthService()),
+        Provider<AuthService>(
+          create: (_) => AuthService(FirebaseAuth.instance),
+        ),
+        StreamProvider(
+          create: (context) => context.read<AuthService>().authStateChanges,
+          initialData: null,
+        ),
       ],
       child: MaterialApp(
         title: 'ShopEase',
-        theme: AppTheme.lightTheme,
-        darkTheme: AppTheme.darkTheme,
-        themeMode: ThemeMode.system,
         debugShowCheckedModeBanner: false,
-        home: const AuthenticationWrapper(),
+        theme: ThemeData(
+          primarySwatch: Colors.blue,
+          visualDensity: VisualDensity.adaptivePlatformDensity,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: Colors.deepOrange,
+            primary: Colors.deepOrange,
+            secondary: Colors.deepOrangeAccent,
+          ),
+          useMaterial3: true,
+        ),
+        home: const AuthWrapper(),
       ),
     );
   }
 }
 
-class AuthenticationWrapper extends StatelessWidget {
-  const AuthenticationWrapper({Key? key}) : super(key: key);
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    final authService = Provider.of<AuthService>(context);
-    return StreamBuilder<UserModel?>(
-      stream: authService.user,
-      builder: (_, AsyncSnapshot<UserModel?> snapshot) {
-        if (snapshot.connectionState == ConnectionState.active) {
-          final UserModel? user = snapshot.data;
-          return user == null ? const LoginScreen() : const HomeScreen();
-        }
-        return const Scaffold(
-          body: Center(
-            child: CircularProgressIndicator(),
-          ),
-        );
-      },
-    );
+    final user = context.watch<User?>();
+
+    if (user != null) {
+      return const HomeScreen();
+    }
+    return const LoginScreen();
   }
 }
